@@ -4,15 +4,19 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 //==============================================================================
-// Potard : filmstrip haute definition (potard noir a aileron facon Echoplex),
-// lumiere fixe en haut a gauche ; aileron, trait blanc et moletage tournent
+// Potard : filmstrip haute definition (potard Echoflex d'apres la photo du visuel),
+// lumiere fixe en haut a gauche ; aileron, trait blanc et dents tournent.
+// Une copie deja mise a la taille d'affichage est gardee en cache (affichage fluide).
 //==============================================================================
 class PointerKnobLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
     void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h,
                            float pos, float startAngle, float endAngle, juce::Slider&) override;
-    juce::Image strip;   // filmstrip verticale : 128 images carrees
+    void prepareScaled (int pixelSize);    // pixelSize = cote d'une image en pixels physiques
+    juce::Image strip;                     // filmstrip d'origine : 128 images carrees
+    juce::Image scaledStrip;               // copie a la taille d'affichage
+    int scaledSize = 0;
 };
 
 //==============================================================================
@@ -28,7 +32,6 @@ public:
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp   (const juce::MouseEvent&) override;
 
-    // appele par le timer de l'editeur
     void checkLongPress (double nowMs);
     bool isHolding() const { return holding && ! moved && ! longFired; }
     double holdStart() const { return downTime; }
@@ -58,18 +61,23 @@ private:
 };
 
 //==============================================================================
-// Zone cliquable de la prise TAP (remplace la pedale MXR M199)
+// Zone cliquable (prise TAP, commande SYNC) : dessin fait par l'editeur
 //==============================================================================
-class TapArea : public juce::Component
+class ClickArea : public juce::Component
 {
 public:
-    std::function<void()> onTap;
-    TapArea() { setMouseCursor (juce::MouseCursor::PointingHandCursor); setRepaintsOnMouseActivity (true); }
+    std::function<void()> onClick, onRightClick;
+    std::function<void (float)> onWheel;
+    ClickArea() { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
     void paint (juce::Graphics&) override {}
     void mouseDown (const juce::MouseEvent& e) override
     {
-        if (! e.mods.isPopupMenu() && onTap)
-            onTap();
+        if (e.mods.isPopupMenu()) { if (onRightClick) onRightClick(); }
+        else if (onClick) onClick();
+    }
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& w) override
+    {
+        if (onWheel) onWheel (w.deltaY);
     }
 };
 
@@ -106,15 +114,20 @@ public:
 private:
     void timerCallback() override;
     void showContextMenu();
+    void showSyncMenu();
     void setScaledHeight (int h);
     void attachVolumeKnob (bool toAge);
     void setAgeEdit (bool on);
     void toggleAge();
+    void toggleSync();
+    void stepSyncDivision (int delta);
     void setParamValue (const char* id, float plain);
     void drawLeds (juce::Graphics&);
     void drawStatus (juce::Graphics&);
     void drawTapFlash (juce::Graphics&);
     void showStatus();
+    void rebuildCaches (float scale = 0.0f);
+    float physicalScale() const;
     juce::String buildStatusLine() const;
     juce::String buildPresetLine() const;
     juce::Rectangle<int> scaled (juce::Rectangle<float> r) const;
@@ -122,7 +135,10 @@ private:
     EchoflexAudioProcessor& proc;
     PointerKnobLookAndFeel lnf;
     RightClickForwarder rightClickFwd;
-    juce::Image background;
+    juce::Image background, bgScaled;
+    int cacheW = 0, cacheH = 0;
+    float cacheScale = 0.0f;
+    int resizeSettle = 0;
 
     juce::Slider sustain, delay;
     PushKnob volume;
@@ -130,22 +146,23 @@ private:
     bool volumeOnAge = false;
 
     FootSwitchArea footswitch;
-    TapArea tapArea;
+    ClickArea tapArea, syncArea;
 
     // Animation LED / ligne d'etat
     juce::Random rng;
-    float ledFlicker = 1.0f;
-    float ledLevel = 1.0f;
-    float echoGlow = 0.0f;
+    float ledFlicker = 1.0f, ledLevel = 1.0f, echoGlow = 0.0f;
     float ageLedLevel = 0.0f;
+    float syncLedLevel = 0.0f;
     float tapFlash = 0.0f;
     int   lastTapCount = 0;
     double blinkPhase = 0.0;
+    double freePhase = 0.0;
     double lastTime = 0.0;
+    float drawnLed = -1.0f, drawnAge = -1.0f, drawnSync = -1.0f, drawnTap = -1.0f, drawnStatus = -1.0f;
 
     juce::String lastStatus, lastPreset;
     float lastKnobs[4] { -1.0f, -1.0f, -1.0f, -1.0f };
-    float lastAgeOn = -1.0f;
+    float lastAgeOn = -1.0f, lastTimeSrc = -1.0f, lastSyncDiv = -1.0f;
     double statusUntil = 0.0;
     float statusAlpha = 0.0f;
     int lastMidiCount = 0;

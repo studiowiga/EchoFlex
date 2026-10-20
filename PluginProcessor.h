@@ -170,6 +170,12 @@ public:
     std::atomic<int>   lastMidiValue   { 0 };
     std::atomic<int>   lastMidiProgram { -1 };
     std::atomic<int>   midiCounter     { 0 };
+    std::atomic<float> hostBpm         { 0.0f };   // tempo du DAW (0 = inconnu)
+    std::atomic<bool>  hostPlaying     { false };
+    std::atomic<double> hostPpq        { 0.0 };    // position en temps (noires) au debut du dernier bloc
+    std::atomic<double> hostPpqTime    { 0.0 };    // instant (ms) ou hostPpq a ete releve
+    static int syncDivFromKnob (float knob);       // SYNC : le potard DELAY choisit la division
+    static float knobForSyncDiv (int division);
     std::atomic<int>   tapCounter      { 0 };
     std::atomic<float> delayMsDisplay  { 300.0f }; // temps de retard reel
     std::atomic<float> echoLevel       { 0.0f };   // niveau des repetitions (animation)
@@ -184,7 +190,8 @@ public:
         ccAgeOn      = 24, // >= 64 : AGE actif, < 64 : son clair
         ccTap        = 25, // chaque appui (passage >= 64) = un TAP
         ccFootswitch = 26, // >= 64 : effet ON, < 64 : effet OFF
-        ccFootToggle = 27  // chaque appui (passage >= 64) inverse l'etat
+        ccFootToggle = 27, // chaque appui (passage >= 64) inverse l'etat
+        ccSync       = 28  // >= 64 : delai synchronise sur le tempo du DAW, < 64 : potard
     };
 
 private:

@@ -10,8 +10,8 @@ namespace
         return Font (FontOptions (h, bold ? Font::bold : Font::plain));
     }
 
-    // Positions dans le repere de reference 760 x 958 (meme cadrage que Wack'd)
-    // (releves sur le visuel ECHOFLEX, mis a l'echelle du projet : 1520 x 1916 = 2 x 760 x 958)
+    // Positions dans le repere de reference 760 x 958 (meme cadrage que Wack'd),
+    // relevees sur le visuel Echoflex mis a l'echelle du projet (1520 x 1916 = 2 x 760 x 958)
     const Point<float> knobVolume  { 380.5f, 147.5f };
     const Point<float> knobSustain { 200.9f, 280.0f };
     const Point<float> knobDelay   { 557.9f, 280.5f };
@@ -23,10 +23,13 @@ namespace
     const float            ledR      = 12.2f;   // lentille rouge (dans la bague chromee de la photo)
     const Point<float>     agePos    { 379.4f, 290.7f };
     const float            ageR      = 5.8f;
+    const Point<float>     syncPos   { 615.0f, 201.8f };   // LED SYNC a droite de l'inscription DELAY
+    const float            syncR     = 5.8f;
     const Rectangle<float> statusRect{ 150.0f, 566.0f, 460.0f, 52.0f };
     const Point<float>     footPos   { 379.1f, 691.6f };
     const float            footR     = 55.0f;
     const Rectangle<float> tapRect   { 66.0f, 760.0f, 92.0f, 76.0f };   // prise TAP + inscription
+    const Rectangle<float> syncRect  { 518.0f, 176.0f, 116.0f, 36.0f };  // inscription DELAY + LED SYNC
 
     const Colour redCore (0xffffd6c8);
     const Colour redMid  (0xffff2616);
@@ -34,6 +37,9 @@ namespace
     const Colour ambCore (0xfffff1c8);
     const Colour ambMid  (0xffffa02a);
     const Colour ambDeep (0xffc85a00);
+    const Colour grnCore (0xffe6ffe9);
+    const Colour grnMid  (0xff36e05a);
+    const Colour grnDeep (0xff0b7a24);
 
     constexpr double longPressMs = 2000.0;   // comme la pedale : maintenir VOLUME 2 s
 }
@@ -41,17 +47,35 @@ namespace
 //==============================================================================
 // POTARD
 //==============================================================================
+void PointerKnobLookAndFeel::prepareScaled (int px)
+{
+    if (! strip.isValid() || px <= 0)
+        return;
+    if (px >= strip.getWidth())                // plus grand que l'original : on garde l'original
+    {
+        scaledStrip = {};
+        scaledSize = 0;
+        return;
+    }
+    if (px == scaledSize && scaledStrip.isValid())
+        return;
+    scaledStrip = strip.rescaled (px, px * knobFrames, Graphics::highResamplingQuality);
+    scaledSize = px;
+}
+
 void PointerKnobLookAndFeel::drawRotarySlider (Graphics& g, int x, int y, int w, int h,
                                                float pos, float, float, Slider&)
 {
-    if (! strip.isValid())
+    const auto& img = scaledStrip.isValid() ? scaledStrip : strip;
+    if (! img.isValid())
         return;
 
-    const int fs = strip.getWidth();
+    const int fs = img.getWidth();
     const int frame = jlimit (0, knobFrames - 1, roundToInt (pos * (float) (knobFrames - 1)));
 
-    g.setImageResamplingQuality (Graphics::highResamplingQuality);
-    g.drawImage (strip, x, y, w, h, 0, frame * fs, fs, fs);
+    g.setImageResamplingQuality (scaledStrip.isValid() ? Graphics::mediumResamplingQuality
+                                                       : Graphics::highResamplingQuality);
+    g.drawImage (img, x, y, w, h, 0, frame * fs, fs, fs);
 }
 
 //==============================================================================
@@ -103,7 +127,7 @@ void PushKnob::checkLongPress (double nowMs)
 // FOOTSWITCH
 //==============================================================================
 FootSwitchArea::FootSwitchArea (RangedAudioParameter& p)
-    : attachment (p, [this] (float v) { value = v > 0.5f; if (auto* par = getParentComponent()) par->repaint(); })
+    : attachment (p, [this] (float v) { value = v > 0.5f; repaint(); })
 {
     attachment.sendInitialUpdate();
     setMouseCursor (MouseCursor::PointingHandCursor);
@@ -119,7 +143,6 @@ void FootSwitchArea::paint (Graphics& g)
 {
     if (pressed)
     {
-        // bouton enfonce : le capuchon s'assombrit
         g.setColour (Colours::black.withAlpha (0.25f));
         g.fillEllipse (getLocalBounds().toFloat().reduced ((float) getWidth() * 0.23f));
     }
@@ -153,7 +176,9 @@ EchoflexAudioProcessorEditor::EchoflexAudioProcessorEditor (EchoflexAudioProcess
     const char* ids[4] = { "delay", "sustain", "volume", "age" };
     for (int i = 0; i < 4; ++i)
         lastKnobs[i] = proc.apvts.getRawParameterValue (ids[i])->load();
-    lastAgeOn = proc.apvts.getRawParameterValue ("ageOn")->load();
+    lastAgeOn   = proc.apvts.getRawParameterValue ("ageOn")->load() > 0.5f ? 1.0f : 0.0f;
+    lastTimeSrc = proc.apvts.getRawParameterValue ("timeSrc")->load();
+    lastSyncDiv = proc.apvts.getRawParameterValue ("syncDiv")->load();
     rightClickFwd.callback = [this] { showContextMenu(); };
 
     auto setupKnob = [this] (Slider& s)
@@ -164,6 +189,7 @@ EchoflexAudioProcessorEditor::EchoflexAudioProcessorEditor (EchoflexAudioProcess
         s.setMouseDragSensitivity (220);
         s.setLookAndFeel (&lnf);
         s.setMouseCursor (MouseCursor::PointingHandCursor);
+        s.setBufferedToImage (false);
         s.addMouseListener (&rightClickFwd, false);
         addAndMakeVisible (s);
     };
@@ -175,12 +201,21 @@ EchoflexAudioProcessorEditor::EchoflexAudioProcessorEditor (EchoflexAudioProcess
     aDelay   = std::make_unique<AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, "delay",   delay);
     attachVolumeKnob (proc.ageEdit.load());
 
-    // Tourner DELAY reprend la main sur le TAP / la synchro (comme la pedale)
-    delay.onDragStart = [this] { setParamValue ("timeSrc", 0.0f); proc.currentPreset = -1; };
+    // Tourner DELAY reprend la main sur le TAP (comme la pedale) ;
+    // en SYNC, le potard DELAY choisit la division de tempo (1/16 ... 1/2)
+    delay.onDragStart = [this]
+    {
+        if (roundToInt (proc.apvts.getRawParameterValue ("timeSrc")->load()) == 1)
+            setParamValue ("timeSrc", 0.0f);
+        proc.currentPreset = -1;
+    };
     delay.onValueChange = [this]
     {
-        if (delay.isMouseButtonDown() && proc.apvts.getRawParameterValue ("timeSrc")->load() > 0.5f)
-            setParamValue ("timeSrc", 0.0f);
+        if (roundToInt (proc.apvts.getRawParameterValue ("timeSrc")->load()) != 2 || ! delay.isMouseButtonDown())
+            return;
+        const int d = EchoflexAudioProcessor::syncDivFromKnob ((float) delay.getValue());
+        if (d != roundToInt (proc.apvts.getRawParameterValue ("syncDiv")->load()))
+            setParamValue ("syncDiv", (float) d);
     };
     sustain.onDragStart = [this] { proc.currentPreset = -1; };
     volume.onDragStart  = [this] { proc.currentPreset = -1; };
@@ -195,9 +230,15 @@ EchoflexAudioProcessorEditor::EchoflexAudioProcessorEditor (EchoflexAudioProcess
     footswitch.addMouseListener (&rightClickFwd, false);
     addAndMakeVisible (footswitch);
 
-    tapArea.onTap = [this] { proc.tap(); };
-    tapArea.addMouseListener (&rightClickFwd, false);
+    tapArea.onClick      = [this] { proc.tap(); };
+    tapArea.onRightClick = [this] { showContextMenu(); };
     addAndMakeVisible (tapArea);
+
+    // SYNC : clic = suit le tempo du DAW (on/off), clic droit = division, molette = division
+    syncArea.onClick      = [this] { toggleSync(); };
+    syncArea.onRightClick = [this] { showSyncMenu(); };
+    syncArea.onWheel      = [this] (float dy) { stepSyncDivision (dy > 0 ? -1 : 1); };
+    addAndMakeVisible (syncArea);
 
     // Taille par defaut = taille minimale (impossible de reduire en dessous)
     const int defaultW = roundToInt ((float) defaultH * (float) baseW / (float) baseH);
@@ -206,6 +247,7 @@ EchoflexAudioProcessorEditor::EchoflexAudioProcessorEditor (EchoflexAudioProcess
     if (auto* cons = getConstrainer())
         cons->setFixedAspectRatio ((double) baseW / (double) baseH);
     setSize (defaultW, defaultH);
+    rebuildCaches();
 
     lastTapCount = proc.tapCounter.load();
     lastTime = Time::getMillisecondCounterHiRes();
@@ -222,7 +264,6 @@ EchoflexAudioProcessorEditor::~EchoflexAudioProcessorEditor()
         s->setLookAndFeel (nullptr);
     }
     footswitch.removeMouseListener (&rightClickFwd);
-    tapArea.removeMouseListener (&rightClickFwd);
 }
 
 void EchoflexAudioProcessorEditor::setParamValue (const char* id, float plain)
@@ -247,15 +288,38 @@ void EchoflexAudioProcessorEditor::setAgeEdit (bool on)
     proc.ageEdit = on;
     if (on)
         setParamValue ("ageOn", 1.0f);          // on entend le reglage pendant qu'on le fait
-    attachVolumeKnob (on);
+    // l'attachement du potard ne change qu'une fois le bouton de la souris relache
+    // (sinon le geste d'automation du DAW reste ouvert : affichage fige dans Reaper)
+    if (! volume.isMouseButtonDown())
+        attachVolumeKnob (on);
     showStatus();
-    repaint();
 }
 
 void EchoflexAudioProcessorEditor::toggleAge()
 {
     const bool on = proc.apvts.getRawParameterValue ("ageOn")->load() > 0.5f;
     setParamValue ("ageOn", on ? 0.0f : 1.0f);
+    showStatus();
+}
+
+void EchoflexAudioProcessorEditor::toggleSync()
+{
+    const bool on = roundToInt (proc.apvts.getRawParameterValue ("timeSrc")->load()) == 2;
+    if (! on)   // la division suit la position actuelle du potard DELAY
+        setParamValue ("syncDiv", (float) EchoflexAudioProcessor::syncDivFromKnob (proc.apvts.getRawParameterValue ("delay")->load()));
+    setParamValue ("timeSrc", on ? 0.0f : 2.0f);
+    proc.currentPreset = -1;
+    showStatus();
+}
+
+void EchoflexAudioProcessorEditor::stepSyncDivision (int delta)
+{
+    const int n = EchoflexAudioProcessor::syncNames().size();
+    const int d = jlimit (0, n - 1, roundToInt (proc.apvts.getRawParameterValue ("syncDiv")->load()) + delta);
+    setParamValue ("syncDiv", (float) d);
+    setParamValue ("delay", EchoflexAudioProcessor::knobForSyncDiv (d));
+    if (roundToInt (proc.apvts.getRawParameterValue ("timeSrc")->load()) != 2)
+        setParamValue ("timeSrc", 2.0f);
     showStatus();
 }
 
@@ -276,6 +340,35 @@ Rectangle<int> EchoflexAudioProcessorEditor::scaled (Rectangle<float> r) const
     return r.transformedBy (AffineTransform::scale (s)).getSmallestIntegerContainer();
 }
 
+float EchoflexAudioProcessorEditor::physicalScale() const
+{
+    return jlimit (1.0f, 4.0f, (float) Component::getApproximateScaleFactorForComponent (this));
+}
+
+//==============================================================================
+// Caches d'affichage : fond et potards deja a la bonne taille -> plus de
+// re-echantillonnage d'une image de 1520 x 1916 a chaque rafraichissement.
+//==============================================================================
+void EchoflexAudioProcessorEditor::rebuildCaches (float sc)
+{
+    if (sc <= 0.0f)
+        sc = cacheScale > 0.0f ? cacheScale : physicalScale();
+    const int w = getWidth(), h = getHeight();
+    if (w <= 0 || h <= 0)
+        return;
+    if (w == cacheW && h == cacheH && std::abs (sc - cacheScale) < 0.01f && bgScaled.isValid())
+        return;
+
+    cacheW = w; cacheH = h; cacheScale = sc;
+    const int pw = roundToInt ((float) w * sc), ph = roundToInt ((float) h * sc);
+    bgScaled = (pw >= background.getWidth()) ? background
+                                             : background.rescaled (pw, ph, Graphics::highResamplingQuality);
+
+    const float s = (float) h / (float) baseH;
+    lnf.prepareScaled (roundToInt (knobR * knobStripHalf * 2.0f * s * sc));
+    repaint();
+}
+
 void EchoflexAudioProcessorEditor::resized()
 {
     const float half = knobR * knobStripHalf;
@@ -289,6 +382,10 @@ void EchoflexAudioProcessorEditor::resized()
 
     footswitch.setBounds (scaled ({ footPos.x - footR, footPos.y - footR, footR * 2.0f, footR * 2.0f }));
     tapArea.setBounds (scaled (tapRect));
+    syncArea.setBounds (scaled (syncRect));
+
+    // pendant un redimensionnement a la souris, on attend que la taille se stabilise
+    resizeSettle = 4;
 }
 
 //==============================================================================
@@ -312,8 +409,14 @@ String EchoflexAudioProcessorEditor::buildPresetLine() const
     const int  src   = roundToInt (proc.apvts.getRawParameterValue ("timeSrc")->load());
 
     String s = ageOn ? "AGE " + String (proc.apvts.getRawParameterValue ("age")->load(), 1) : String ("CLEAR TAPE");
-    if      (src == 1) s << " / TAP";
-    else if (src == 2) s << " / SYNC " << EchoflexAudioProcessor::syncNames()[roundToInt (proc.apvts.getRawParameterValue ("syncDiv")->load())];
+    if (src == 1) s << " / TAP";
+    else if (src == 2)
+    {
+        s << " / SYNC " << EchoflexAudioProcessor::syncNames()[roundToInt (proc.apvts.getRawParameterValue ("syncDiv")->load())];
+        const float bpm = proc.hostBpm.load();
+        if (bpm > 1.0f) s << " @ " << String (bpm, 1) << " BPM";
+        else            s << " (no host tempo)";
+    }
     if (! on) s << " / BYPASS";
 
     const int cp = proc.currentPreset.load();
@@ -336,10 +439,13 @@ void EchoflexAudioProcessorEditor::timerCallback()
     const double dt = jlimit (0.0, 0.1, (now - lastTime) * 0.001);
     lastTime = now;
 
+    if (resizeSettle > 0 && --resizeSettle == 0)
+        rebuildCaches();
+
+
     volume.checkLongPress (now);
 
-    // l'etat AGE a pu changer ailleurs (automation, MIDI, preset)
-    if (volumeOnAge != proc.ageEdit.load())
+    if (volumeOnAge != proc.ageEdit.load() && ! volume.isMouseButtonDown())
         attachVolumeKnob (proc.ageEdit.load());
 
     const int mc = proc.midiCounter.load();
@@ -356,14 +462,14 @@ void EchoflexAudioProcessorEditor::timerCallback()
         for (int i = 0; i < 4; ++i)
         {
             const float v = proc.apvts.getRawParameterValue (ids[i])->load();
-            if (std::abs (v - lastKnobs[i]) > 1.0e-4f)
-            {
-                lastKnobs[i] = v;
-                showStatus();
-            }
+            if (std::abs (v - lastKnobs[i]) > 1.0e-4f) { lastKnobs[i] = v; showStatus(); }
         }
         const float ao = proc.apvts.getRawParameterValue ("ageOn")->load() > 0.5f ? 1.0f : 0.0f;
         if (std::abs (ao - lastAgeOn) > 0.5f) { lastAgeOn = ao; showStatus(); }
+        const float ts = proc.apvts.getRawParameterValue ("timeSrc")->load();
+        const float sd = proc.apvts.getRawParameterValue ("syncDiv")->load();
+        if (std::abs (ts - lastTimeSrc) > 0.5f || std::abs (sd - lastSyncDiv) > 0.5f)
+        { lastTimeSrc = ts; lastSyncDiv = sd; showStatus(); }
 
         for (auto* s : { (Slider*) &sustain, (Slider*) &delay, (Slider*) &volume })
             if (s->isMouseButtonDown())
@@ -374,12 +480,10 @@ void EchoflexAudioProcessorEditor::timerCallback()
         const float target = now < statusUntil ? 1.0f : 0.0f;
         statusAlpha += (target - statusAlpha) * (target > statusAlpha ? 0.45f : 0.12f);
         if (statusAlpha < 0.005f) statusAlpha = 0.0f;
+        if (statusAlpha > 0.995f) statusAlpha = 1.0f;
     }
 
-    lastStatus = buildStatusLine();
-    lastPreset = buildPresetLine();
-
-    // LED AGE : allumee si AGE actif, clignote pendant le reglage (et pendant l'appui long)
+    // LED AGE : allumee si AGE actif, clignote pendant le reglage (et se remplit pendant l'appui long)
     blinkPhase += dt;
     const bool ageOn = proc.apvts.getRawParameterValue ("ageOn")->load() > 0.5f;
     float ageTarget = ageOn ? 1.0f : 0.0f;
@@ -388,19 +492,77 @@ void EchoflexAudioProcessorEditor::timerCallback()
     else if (volume.isHolding() && now - volume.holdStart() > 350.0)
         ageTarget = (float) jlimit (0.0, 1.0, (now - volume.holdStart()) / longPressMs) * (std::fmod (blinkPhase, 0.2) < 0.1 ? 1.0f : 0.5f);
     ageLedLevel += (ageTarget - ageLedLevel) * 0.6f;
+    if (std::abs (ageTarget - ageLedLevel) < 0.002f) ageLedLevel = ageTarget;
 
-    ledFlicker = 0.965f + 0.035f * rng.nextFloat();
+    // LED SYNC (verte) : eteinte hors synchro ; en synchro, flash a chaque division du tempo
+    {
+        const bool syncOn = roundToInt (proc.apvts.getRawParameterValue ("timeSrc")->load()) == 2;
+        float target = 0.0f;
+        if (syncOn)
+        {
+            const double bpm = proc.hostBpm.load();
+            const double beats = EchoflexAudioProcessor::syncBeats (roundToInt (proc.apvts.getRawParameterValue ("syncDiv")->load()));
+            double ph;
+            if (bpm > 1.0 && proc.hostPlaying.load())
+            {
+                const double ppq = proc.hostPpq.load() + (now - proc.hostPpqTime.load()) / 60000.0 * bpm;
+                ph = std::fmod (ppq / beats, 1.0);
+                if (ph < 0.0) ph += 1.0;
+            }
+            else
+            {
+                const double periodMs = jmax (65.0, (double) proc.delayMsDisplay.load());
+                freePhase = std::fmod (freePhase + dt * 1000.0 / periodMs, 1.0);
+                ph = freePhase;
+            }
+            target = bpm > 1.0 ? 0.30f + 0.70f * (float) std::exp (-ph * 9.0) : 0.22f;
+        }
+        syncLedLevel += (target - syncLedLevel) * (target > syncLedLevel ? 0.85f : 0.5f);
+        if (std::abs (target - syncLedLevel) < 0.002f) syncLedLevel = target;
+    }
 
     // LED rouge : allumage / extinction en fondu, lueur qui respire avec les repetitions
     ledLevel += ((footswitch.isOn() ? 1.0f : 0.0f) - ledLevel) * (footswitch.isOn() ? 0.45f : 0.28f);
     if (ledLevel < 0.003f) ledLevel = 0.0f;
+    if (ledLevel > 0.997f) ledLevel = 1.0f;
     const float echoNow = jlimit (0.0f, 1.0f, proc.echoLevel.load() * 2.5f);
     echoGlow += (echoNow - echoGlow) * (echoNow > echoGlow ? 0.5f : 0.12f);
+    ledFlicker = ledLevel > 0.0f ? 0.965f + 0.035f * rng.nextFloat() : 1.0f;
 
-    repaint (scaled ({ ledPos.x - 50.0f, ledPos.y - 50.0f, 100.0f, 100.0f })
-                 .getUnion (scaled ({ agePos.x - 30.0f, agePos.y - 30.0f, 60.0f, 60.0f }))
-                 .getUnion (scaled (statusRect.expanded (4.0f)))
-                 .getUnion (scaled (tapRect.expanded (12.0f))));
+    // --- On ne redessine que ce qui a change (zones separees, pas une grande union) ---
+    const float ledNow = ledLevel * ledFlicker * (0.86f + 0.22f * echoGlow);
+    if (std::abs (ledNow - drawnLed) > 0.003f)
+    {
+        drawnLed = ledNow;
+        repaint (scaled ({ ledPos.x - 52.0f, ledPos.y - 52.0f, 104.0f, 104.0f }));
+    }
+    if (std::abs (ageLedLevel - drawnAge) > 0.003f)
+    {
+        drawnAge = ageLedLevel;
+        repaint (scaled ({ agePos.x - 26.0f, agePos.y - 26.0f, 52.0f, 52.0f }));
+    }
+    if (std::abs (syncLedLevel - drawnSync) > 0.003f)
+    {
+        drawnSync = syncLedLevel;
+        repaint (scaled ({ syncPos.x - 26.0f, syncPos.y - 26.0f, 52.0f, 52.0f }));
+    }
+    const float tapNow = jmax (tapFlash, tapArea.isMouseOver() ? 0.25f : 0.0f);
+    if (std::abs (tapNow - drawnTap) > 0.003f)
+    {
+        drawnTap = tapNow;
+        repaint (scaled (tapRect.expanded (12.0f)));
+    }
+
+    const auto newStatus = buildStatusLine();
+    const auto newPreset = buildPresetLine();
+    const bool textChanged = newStatus != lastStatus || newPreset != lastPreset;
+    lastStatus = newStatus;
+    lastPreset = newPreset;
+    if (std::abs (statusAlpha - drawnStatus) > 0.003f || (statusAlpha > 0.0f && (textChanged || midiFlash > 0)))
+    {
+        drawnStatus = statusAlpha;
+        repaint (scaled (statusRect.expanded (4.0f)));
+    }
 }
 
 //==============================================================================
@@ -412,14 +574,12 @@ void EchoflexAudioProcessorEditor::drawLeds (Graphics& g)
         if (level <= 0.003f)
             return;
 
-        // halo sur le panneau et la bague
-        ColourGradient bloom (mid.withAlpha (0.62f * level * glow), c.x, c.y,
+        ColourGradient bloom (mid.withAlpha (jmin (1.0f, 0.62f * level * glow)), c.x, c.y,
                               mid.withAlpha (0.0f), c.x + bloomR, c.y, true);
-        bloom.addColour (0.35, mid.withAlpha (0.16f * level * glow));
+        bloom.addColour (0.35, mid.withAlpha (jmin (1.0f, 0.16f * level * glow)));
         g.setGradientFill (bloom);
         g.fillEllipse (c.x - bloomR, c.y - bloomR, bloomR * 2.0f, bloomR * 2.0f);
 
-        // dome de la lentille : coeur chaud, rouge, bord plus sombre (refraction)
         ColourGradient body (core.withAlpha (level), c.x - r * 0.10f, c.y - r * 0.12f,
                              deep.withAlpha (level), c.x + r * 1.05f, c.y + r * 0.2f, true);
         body.addColour (0.30, core.interpolatedWith (mid, 0.55f).withAlpha (level));
@@ -427,32 +587,27 @@ void EchoflexAudioProcessorEditor::drawLeds (Graphics& g)
         g.setGradientFill (body);
         g.fillEllipse (c.x - r, c.y - r, r * 2.0f, r * 2.0f);
 
-        // anneau interne plus sombre au bord du dome
         g.setColour (deep.darker (0.6f).withAlpha (0.55f * level));
         g.drawEllipse (c.x - r + 0.6f, c.y - r + 0.6f, r * 2.0f - 1.2f, r * 2.0f - 1.2f, r * 0.12f);
 
-        // reflet du verre (meme position que sur la photo : haut-gauche)
         ColourGradient sp (Colours::white.withAlpha (0.75f * level), c.x - r * 0.30f, c.y - r * 0.42f,
                            Colours::white.withAlpha (0.0f), c.x - r * 0.30f + r * 0.32f, c.y - r * 0.42f, true);
         g.setGradientFill (sp);
         g.fillEllipse (c.x - r * 0.62f, c.y - r * 0.70f, r * 0.64f, r * 0.52f);
     };
 
-    // LED principale (rouge) : effet actif ; respire legerement avec le niveau des echos
     const float glow = ledFlicker * (0.86f + 0.22f * echoGlow);
-    lens (ledPos, ledR, ledLevel, glow, redCore, redMid, redDeep, 50.0f);
-
-    // LED AGE (ambre)
-    lens (agePos, ageR, ageLedLevel, 1.0f, ambCore, ambMid, ambDeep, 24.0f);
+    lens (ledPos,  ledR,  ledLevel,     glow, redCore, redMid, redDeep, 50.0f);
+    lens (agePos,  ageR,  ageLedLevel,  1.0f, ambCore, ambMid, ambDeep, 24.0f);
+    lens (syncPos, syncR, syncLedLevel, 1.0f, grnCore, grnMid, grnDeep, 24.0f);
 }
 
 void EchoflexAudioProcessorEditor::drawTapFlash (Graphics& g)
 {
-    if (tapFlash <= 0.0f && ! tapArea.isMouseOver())
+    const float a = jmax (tapFlash, tapArea.isMouseOver() ? 0.25f : 0.0f);
+    if (a <= 0.0f)
         return;
 
-    // reflet sur l'ecrou de la prise TAP + inscription qui s'eclaire a chaque TAP
-    const float a = jmax (tapFlash, tapArea.isMouseOver() ? 0.25f : 0.0f);
     const Point<float> jackC { 86.0f, 793.0f };
     ColourGradient gl (Colours::white.withAlpha (0.55f * a), jackC.x, jackC.y,
                        Colours::white.withAlpha (0.0f), jackC.x + 26.0f, jackC.y, true);
@@ -480,26 +635,31 @@ void EchoflexAudioProcessorEditor::drawStatus (Graphics& g)
 
     g.setColour (Colours::white.withAlpha (a));
     g.setFont (font (18.5f, true));
-    g.drawText (lastStatus.isEmpty() ? buildStatusLine() : lastStatus,
-                statusRect.withHeight (28.0f).translated (0.0f, 3.0f), Justification::centred);
+    g.drawText (lastStatus, statusRect.withHeight (28.0f).translated (0.0f, 3.0f), Justification::centred);
 
     g.setColour ((midiFlash > 0 || tapFlash > 0.0f ? Colour (0xffff6a50) : accent).withMultipliedAlpha (a));
     g.setFont (font (14.5f, true));
-    g.drawText (lastPreset.isEmpty() ? buildPresetLine() : lastPreset,
-                statusRect.withTrimmedTop (28.0f).withTrimmedBottom (4.0f), Justification::centred);
+    g.drawFittedText (lastPreset, statusRect.withTrimmedTop (28.0f).withTrimmedBottom (4.0f).reduced (6.0f, 0.0f).toNearestInt(),
+                      Justification::centred, 1, 0.8f);
 }
 
 void EchoflexAudioProcessorEditor::paint (Graphics& g)
 {
     g.fillAll (Colours::black);
-    g.setImageResamplingQuality (Graphics::highResamplingQuality);
-    if (background.isValid())
-        g.drawImage (background, getLocalBounds().toFloat());
+    // echelle reelle des pixels de ce dessin (ecran HiDPI, zoom du DAW, capture...)
+    const float pix = jlimit (1.0f, 4.0f, g.getInternalContext().getPhysicalPixelScaleFactor());
+    if (! bgScaled.isValid() || (resizeSettle == 0 && std::abs (pix - cacheScale) > 0.01f))
+        rebuildCaches (pix);
+
+    // fond deja a la taille d'affichage : copie quasi directe, sans re-echantillonnage couteux
+    g.setImageResamplingQuality (bgScaled.getWidth() == background.getWidth() ? Graphics::highResamplingQuality
+                                                                               : Graphics::lowResamplingQuality);
+    if (bgScaled.isValid())
+        g.drawImage (bgScaled, getLocalBounds().toFloat());
 
     const float s = (float) getHeight() / (float) baseH;
     g.addTransform (AffineTransform::scale (s));
 
-    // Prises jack, vis, titre ECHOFLEX et logo Studio Wiga font partie de l'image de fond.
     drawLeds (g);
     drawTapFlash (g);
     drawStatus (g);
@@ -510,6 +670,33 @@ void EchoflexAudioProcessorEditor::mouseDown (const MouseEvent& e)
 {
     if (e.mods.isPopupMenu())
         showContextMenu();
+}
+
+void EchoflexAudioProcessorEditor::showSyncMenu()
+{
+    auto raw = [this] (const char* id) { return proc.apvts.getRawParameterValue (id)->load(); };
+    const int src = roundToInt (raw ("timeSrc"));
+    PopupMenu m;
+    m.addSectionHeader ("Sync delay to DAW tempo");
+    m.addItem (1, "Sync on", true, src == 2);
+    m.addSeparator();
+    const auto names = EchoflexAudioProcessor::syncNames();
+    for (int i = 0; i < names.size(); ++i)
+        m.addItem (10 + i, names[i], true, src == 2 && roundToInt (raw ("syncDiv")) == i);
+
+    m.showMenuAsync (PopupMenu::Options().withTargetComponent (&syncArea),
+        [safe = Component::SafePointer<EchoflexAudioProcessorEditor> (this)] (int r)
+        {
+            if (safe == nullptr || r == 0) return;
+            if (r == 1) safe->toggleSync();
+            else
+            {
+                safe->setParamValue ("syncDiv", (float) (r - 10));
+                safe->setParamValue ("delay", EchoflexAudioProcessor::knobForSyncDiv (r - 10));
+                safe->setParamValue ("timeSrc", 2.0f);
+                safe->showStatus();
+            }
+        });
 }
 
 void EchoflexAudioProcessorEditor::showContextMenu()
@@ -556,7 +743,7 @@ void EchoflexAudioProcessorEditor::showContextMenu()
     const auto names = EchoflexAudioProcessor::syncNames();
     for (int i = 0; i < names.size(); ++i)
         sync.addItem (70 + i, names[i], true, src == 2 && roundToInt (raw ("syncDiv")) == i);
-    timeMenu.addSubMenu ("Host tempo sync", sync, true, nullptr, src == 2);
+    timeMenu.addSubMenu ("Sync to DAW tempo (click DELAY / SYNC)", sync, true, nullptr, src == 2);
     menu.addSubMenu ("Delay time", timeMenu);
 
     PopupMenu settings;
@@ -580,11 +767,12 @@ void EchoflexAudioProcessorEditor::showContextMenu()
     midi.addItem (905, "CC 25  Tap (each press)",                   false);
     midi.addItem (906, "CC 26  Footswitch (64+ ON / 0-63 OFF)",     false);
     midi.addItem (907, "CC 27  Footswitch toggle (each press)",     false);
+    midi.addItem (909, "CC 28  Sync to DAW tempo (64+ ON / 0-63 OFF)", false);
     midi.addItem (908, "Program Change 1-10  Factory presets",      false);
     menu.addSubMenu ("MIDI map", midi);
 
     menu.addSeparator();
-    menu.addItem (999, "ECHOFLEX delay v1.1.0 - STUDIO WIGA", false);
+    menu.addItem (999, "Echoflex delay v1.2.0 - STUDIO WIGA", false);
 
     menu.showMenuAsync (PopupMenu::Options().withTargetComponent (this),
         [safe = Component::SafePointer<EchoflexAudioProcessorEditor> (this)] (int r)
@@ -606,6 +794,7 @@ void EchoflexAudioProcessorEditor::showContextMenu()
             else if (r >= 70 && r < 80)
             {
                 ed.setParamValue ("syncDiv", (float) (r - 70));
+                ed.setParamValue ("delay", EchoflexAudioProcessor::knobForSyncDiv (r - 70));
                 ed.setParamValue ("timeSrc", 2.0f);
             }
             else if (r >= 100 && r < 200) ed.proc.applyFactoryPreset (r - 100);
@@ -613,6 +802,5 @@ void EchoflexAudioProcessorEditor::showContextMenu()
             else if (r > 300 && r < 400)  ed.proc.saveUserPreset (r - 300);
 
             ed.showStatus();
-            ed.repaint();
         });
 }

@@ -38,6 +38,23 @@ juce::StringArray EchoflexAudioProcessor::syncNames()
     return { "1/2", "1/4 dotted", "1/4", "1/4 triplet", "1/8 dotted", "1/8", "1/8 triplet", "1/16" };
 }
 
+// divisions rangees de la plus courte a la plus longue (sens du potard DELAY)
+static const int divByLength[] = { 7, 6, 5, 3, 4, 2, 1, 0 };   // 1/16, 1/8T, 1/8, 1/4T, 1/8., 1/4, 1/4., 1/2
+
+int EchoflexAudioProcessor::syncDivFromKnob (float knob)
+{
+    const int zone = juce::jlimit (0, 7, (int) std::floor (juce::jlimit (0.0f, 10.0f, knob) / 10.0f * 8.0f));
+    return divByLength[zone];
+}
+
+float EchoflexAudioProcessor::knobForSyncDiv (int division)
+{
+    for (int z = 0; z < 8; ++z)
+        if (divByLength[z] == division)
+            return ((float) z + 0.5f) / 8.0f * 10.0f;
+    return 5.0f;
+}
+
 double EchoflexAudioProcessor::syncBeats (int d)
 {
     static const double beats[] = { 2.0, 1.5, 1.0, 2.0 / 3.0, 0.75, 0.5, 1.0 / 3.0, 0.25 };
@@ -195,12 +212,10 @@ float EchoflexAudioProcessor::computeTargetMs()
 
     if (src == 2)
     {
-        if (auto* ph = getPlayHead())
-            if (auto pos = ph->getPosition())
-                if (auto bpm = pos->getBpm())
-                    if (*bpm > 1.0)
-                        return (float) juce::jlimit (65.0, 4000.0,
-                                                     60000.0 / *bpm * syncBeats (juce::roundToInt (pSyncDiv->load())));
+        const float bpm = hostBpm.load();
+        if (bpm > 1.0f)
+            return (float) juce::jlimit (65.0, 4000.0,
+                                         60000.0 / (double) bpm * syncBeats (juce::roundToInt (pSyncDiv->load())));
     }
 
     return knobToMs (pDelay->load());
@@ -220,7 +235,13 @@ void EchoflexAudioProcessor::handleMidi (juce::MidiBuffer& midi)
 
             switch (cc)
             {
-                case ccDelay:      setParam ("delay", knobValue); setParam ("timeSrc", 0.0f); currentPreset = -1; break;
+                case ccDelay:
+                    setParam ("delay", knobValue);
+                    if (juce::roundToInt (pTimeSrc->load()) == 2) setParam ("syncDiv", (float) syncDivFromKnob (knobValue));
+                    else                                          setParam ("timeSrc", 0.0f);
+                    currentPreset = -1;
+                    break;
+                case ccSync:       setParam ("timeSrc", v >= 64 ? 2.0f : 0.0f); break;
                 case ccSustain:    setParam ("sustain", knobValue); currentPreset = -1; break;
                 case ccVolume:     setParam ("volume",  knobValue); currentPreset = -1; break;
                 case ccAge:        setParam ("age",     knobValue); currentPreset = -1; break;
@@ -290,6 +311,22 @@ void EchoflexAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     if (numSamples == 0 || chan[0].line.empty())
         return;
 
+    // tempo et position du DAW (Reaper ou autre) pour la synchro et la LED SYNC
+    if (auto* ph = getPlayHead())
+    {
+        if (auto pos = ph->getPosition())
+        {
+            if (auto bpm = pos->getBpm())
+                hostBpm = (float) *bpm;
+            hostPlaying = pos->getIsPlaying();
+            if (auto ppq = pos->getPpqPosition())
+            {
+                hostPpq = *ppq;
+                hostPpqTime = juce::Time::getMillisecondCounterHiRes();
+            }
+        }
+    }
+
     const float targetMs = computeTargetMs();
     delayMsDisplay = targetMs;
     const float targetSamp = targetMs * (float) sr / 1000.0f;
@@ -306,7 +343,7 @@ void EchoflexAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     float g = s < 0.5f ? 0.62f * s
                        : 0.31f + 0.77f * std::pow ((s - 0.5f) / 0.5f, 1.6f);
     g *= 0.92f + 0.16f * v;                              // interaction VOLUME / SUSTAIN (comme la pedale)
-    const float volT = 1.45f * std::pow (v, 1.5f);       // midi ~ -7 dB, maxi ~ +3 dB
+    const float volT = 1.45f * std::pow (v, 1.5f);       // midi ~ -6 dB, maxi ~ +3 dB
 
     // filtres : mis a jour par bloc avec AGE lisse
     smAge += (ageT - smAge) * 0.25f;

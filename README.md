@@ -1,16 +1,16 @@
-# ECHOFLEX (Studio Wiga) — VST3
+# Echoflex (Studio Wiga) — VST3
 
 Reproduction en plugin VST3 (Windows 11 et macOS) de la pédale **Dunlop EP103 Echoplex Delay**, la version « boîtier » de l'écho à bande Maestro **Echoplex EP-3** (1970-1991).
-Usage personnel. Visuel photo ECHOFLEX (v1.1) mis à l'échelle du projet (1520 × 1916, même cadrage que Wack'd), logo Studio Wiga en noir et blanc.
+Usage personnel. Visuel photo ECHOFLEX mis à l'échelle du projet (1520 × 1916, même cadrage que Wack'd), logo Studio Wiga en noir et blanc.
 
 ## Installation via GitHub
 
 1. Déposer à la racine du dépôt : `background.jpg`, `knob_strip.png`, `CMakeLists.txt`, `PluginProcessor.h/.cpp`, `PluginEditor.h/.cpp`, `README.md`, `Montserrat-OFL.txt` et le dossier `.github/workflows/build.yml`.
 2. Le push lance la compilation (onglet **Actions**) : Windows (`windows-2022`) et macOS (binaire universel).
 3. Télécharger l'artefact :
-   - **Windows** : copier `ECHOFLEX.vst3` dans `C:\Program Files\Common Files\VST3\`
-   - **macOS** : dézipper puis copier `ECHOFLEX.vst3` dans `~/Library/Audio/Plug-Ins/VST3/`
-4. Relancer l'analyse des plugins dans le DAW. Le plugin apparaît comme **ECHOFLEX (Studio Wiga)**.
+   - **Windows** : copier `Echoflex.vst3` dans `C:\Program Files\Common Files\VST3\`
+   - **macOS** : dézipper puis copier `Echoflex.vst3` dans `~/Library/Audio/Plug-Ins/VST3/`
+4. Relancer l'analyse des plugins dans le DAW. Le plugin apparaît comme **Echoflex (Studio Wiga)**.
 
 ## Ce que fait la vraie EP103 (documentation)
 
@@ -18,7 +18,7 @@ Usage personnel. Visuel photo ECHOFLEX (v1.1) mis à l'échelle du projet (1520 
 |---|---|---|
 | DELAY | Temps de retard 65 → 750 ms | Identique (courbe logarithmique : midi ≈ 221 ms) |
 | SUSTAIN | Nombre de répétitions ; 1re moitié douce (1 à 2 répétitions), 2e moitié qui monte « presque exponentiellement », auto-oscillation au maximum | Identique ; l'auto-oscillation est bornée par la saturation de la bande |
-| VOLUME | Niveau de l'écho (le son direct reste à l'unité). Peut glisser l'écho derrière le jeu ou rendre les premières répétitions plus fortes | Midi ≈ −7 dB, maximum ≈ +3 dB. Légère interaction avec SUSTAIN, comme sur la pédale |
+| VOLUME | Niveau de l'écho (le son direct reste à l'unité). Peut glisser l'écho derrière le jeu ou rendre les premières répétitions plus fortes | Midi ≈ −6 dB, maximum ≈ +3 dB. Légère interaction avec SUSTAIN, comme sur la pédale |
 | AGE (VOLUME poussé) | Clic sur VOLUME : bascule entre le réglage AGE et le son clair d'usine (LED AGE éteinte = son clair). Maintenir VOLUME 2 s : la LED AGE clignote, VOLUME règle alors l'usure ; nouvel appui = verrouillage | Identique : **clic** sur le potard VOLUME = AGE on/off ; **appui maintenu 2 s** = réglage AGE (LED qui clignote, le potard affiche la valeur AGE) ; **clic** = verrouillage |
 | Son clair | Bande neuve fraîchement réglée : écho clair, pleurage/scintillement subtils | Wow 0,55 Hz et flutter 7,3/11,7 Hz très légers |
 | AGE au maximum | Plus sombre, plus de saturation de bande, plus de modulation (qui paraît aléatoire), « fatigue » de la bande | Filtres fermés jusqu'à ~2,5 kHz, saturation, wow ×15, dérive aléatoire, pertes de niveau, léger souffle qui suit l'écho |
@@ -50,6 +50,7 @@ Sources : manuel Dunlop EP103 (jimdunlop.com), fiches zZounds et Chicago Music E
 | CC 25 | TAP (chaque appui) |
 | CC 26 | Footswitch (≥ 64 ON, < 64 OFF) |
 | CC 27 | Footswitch bascule (chaque appui) |
+| CC 28 | SYNC : 64-127 delay calé sur le tempo du DAW, 0-63 potard DELAY |
 | Program Change 1-10 | Presets d'usine |
 
 Tous les paramètres sont aussi automatisables et assignables en MIDI-learn dans le DAW.
@@ -61,3 +62,12 @@ Tous les paramètres sont aussi automatisables et assignables en MIDI-learn dans
 ## Placement dans Reaper
 
 Comme les autres plugins Studio Wiga : **avant** Genome. Le mode Mono (par défaut, comme la pédale) envoie le même écho à gauche et à droite, sans opposition de phase : aucune annulation quand Genome additionne la piste en mono.
+
+## Nouveautés v1.2
+
+- Nom du plug-in : **Echoflex** (fichier `Echoflex.vst3`, « Echoflex (Studio Wiga) » dans le DAW).
+- **SYNC** : clic sur l'inscription DELAY ou sur la LED SYNC verte = delay calé sur le tempo de Reaper / du DAW. En SYNC, le potard DELAY choisit la valeur de note (1/16 → 1/2) ; molette ou clic droit sur DELAY/SYNC = valeur de note ; CC 28. La LED flashe sur la grille du morceau.
+- Crans des potards redessinés : ils tournent sous la lumière fixe (haut-gauche), plus sombres pour le volume.
+- « PUSH FOR AGE » plus lisible ; inscription SYNC au-dessus de sa LED.
+- Affichage fluide : fond et potards pré-dimensionnés à l'écran, seules les LED et la ligne d'état sont redessinées ; geste d'automation de VOLUME toujours refermé après l'appui long AGE.
+- Notice : `Echoflex-Manual.pdf` (anglais puis français).
