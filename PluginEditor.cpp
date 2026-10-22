@@ -433,8 +433,32 @@ String EchoflexAudioProcessorEditor::buildPresetLine() const
 }
 
 //==============================================================================
+// Anti-gel de la fenetre (Windows) : JUCE 8 dessine par defaut avec Direct2D (carte graphique).
+// Avec certains pilotes (Intel notamment) la fenetre du plugin cesse de se rafraichir alors que
+// le DAW continue de tourner. Le moteur logiciel est stable partout et largement assez rapide ici.
+void EchoflexAudioProcessorEditor::useSoftwareRenderer()
+{
+   #if JUCE_WINDOWS
+    if (auto* peer = getPeer())
+    {
+        int sw = peer->getAvailableRenderingEngines().indexOf ("Software Renderer");
+        if (sw < 0) sw = 0;
+        if (peer->getCurrentRenderingEngine() != sw)
+            peer->setCurrentRenderingEngine (sw);
+    }
+   #endif
+}
+
+void EchoflexAudioProcessorEditor::parentHierarchyChanged()
+{
+    useSoftwareRenderer();
+}
+
+//==============================================================================
 void EchoflexAudioProcessorEditor::timerCallback()
 {
+    useSoftwareRenderer();   // au cas ou la fenetre a ete recreee par l'hote (changement d'ecran, d'echelle...)
+
     const double now = Time::getMillisecondCounterHiRes();
     const double dt = jlimit (0.0, 0.1, (now - lastTime) * 0.001);
     lastTime = now;
@@ -772,7 +796,7 @@ void EchoflexAudioProcessorEditor::showContextMenu()
     menu.addSubMenu ("MIDI map", midi);
 
     menu.addSeparator();
-    menu.addItem (999, "Echoflex delay v1.2.0 - STUDIO WIGA", false);
+    menu.addItem (999, "Echoflex delay v1.2.1 - STUDIO WIGA", false);
 
     menu.showMenuAsync (PopupMenu::Options().withTargetComponent (this),
         [safe = Component::SafePointer<EchoflexAudioProcessorEditor> (this)] (int r)

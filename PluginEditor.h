@@ -104,6 +104,7 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    void parentHierarchyChanged() override;
     void mouseDown (const juce::MouseEvent&) override;
 
     // Repere de reference (100 %) ; taille par defaut = taille minimale (identique a Wack'd)
@@ -113,6 +114,7 @@ public:
 
 private:
     void timerCallback() override;
+    void useSoftwareRenderer();
     void showContextMenu();
     void showSyncMenu();
     void setScaledHeight (int h);
