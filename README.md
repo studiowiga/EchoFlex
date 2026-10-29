@@ -63,6 +63,10 @@ Tous les paramètres sont aussi automatisables et assignables en MIDI-learn dans
 
 Comme les autres plugins Studio Wiga : **avant** Genome. Le mode Mono (par défaut, comme la pédale) envoie le même écho à gauche et à droite, sans opposition de phase : aucune annulation quand Genome additionne la piste en mono.
 
+## Nouveautés v1.3
+
+- v1.3.0 : anti-gel v2 (JUCE 8.0.15, caches refaits par le timer, chien de garde, aucun appel à l'hôte depuis le thread audio)
+
 ## Nouveautés v1.2
 
 - Nom du plug-in : **Echoflex** (fichier `Echoflex.vst3`, « Echoflex (Studio Wiga) » dans le DAW).

@@ -109,11 +109,12 @@ namespace wiga
 }
 
 //==============================================================================
-class EchoflexAudioProcessor : public juce::AudioProcessor
+class EchoflexAudioProcessor : public juce::AudioProcessor,
+                               private juce::Timer
 {
 public:
     EchoflexAudioProcessor();
-    ~EchoflexAudioProcessor() override = default;
+    ~EchoflexAudioProcessor() override;
 
     //==========================================================================
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
@@ -158,8 +159,8 @@ public:
     bool hasUserPreset (int slot) const;
     static juce::File getUserPresetFile();
 
-    // TAP : appel depuis l'interface (clic sur la prise TAP) ou le MIDI
-    void tap();
+    // TAP : appel depuis l'interface (clic sur la prise TAP) ; le MIDI passe par la file (anti-gel v2)
+    void tap (double nowMs = 0.0);
     static float knobToMs (float knob);          // potard DELAY 0..10 -> 65..750 ms
     static double syncBeats (int division);      // division -> nombre de temps
     static juce::StringArray syncNames();
@@ -198,6 +199,18 @@ private:
     void handleMidi (juce::MidiBuffer& midi);
     void setParam (const juce::String& id, float plainValue);
     float computeTargetMs();
+
+    // Anti-gel v2 : depuis le thread audio, aucun appel a l'hote ; les valeurs sont mises en file
+    // et transmises au DAW par un timer du thread de messages (60 Hz).
+    void timerCallback() override;
+    void setParamFromAudio (const char* id, float plain);
+    float queuedOrCurrent (const char* id, std::atomic<float>* current) const;
+    static constexpr int numQueued = 9;
+    static const char* queuedId (int i);
+    std::atomic<float> pendingValue[numQueued];
+    std::atomic<bool>  pendingSet[numQueued];
+    std::atomic<int>    pendingPreset  { -1 };
+    std::atomic<double> pendingTapMs   { 0.0 };   // instant d'un TAP MIDI (0 = aucun)
 
     std::atomic<float>* pDelay   = nullptr;
     std::atomic<float>* pSustain = nullptr;

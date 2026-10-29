@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <cstring>
 
 //==============================================================================
 // Presets d'usine — reglages notes comme sur la pedale (0 a 10)
@@ -80,6 +81,18 @@ EchoflexAudioProcessor::EchoflexAudioProcessor()
     pTimeSrc = apvts.getRawParameterValue ("timeSrc");
     pSyncDiv = apvts.getRawParameterValue ("syncDiv");
     pTapMs   = apvts.getRawParameterValue ("tapMs");
+
+    for (int i = 0; i < numQueued; ++i)
+    {
+        pendingValue[i].store (0.0f);
+        pendingSet[i].store (false);
+    }
+    startTimerHz (60);
+}
+
+EchoflexAudioProcessor::~EchoflexAudioProcessor()
+{
+    stopTimer();
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout EchoflexAudioProcessor::createLayout()
@@ -169,9 +182,52 @@ void EchoflexAudioProcessor::setParam (const juce::String& id, float plainValue)
         p->setValueNotifyingHost (p->convertTo0to1 (plainValue));
 }
 
-void EchoflexAudioProcessor::tap()
+// Anti-gel v2 (Studio Wiga) : jamais d'appel a l'hote (setValueNotifyingHost) ni d'allocation depuis
+// le thread audio. Le MIDI met la valeur en file ; un timer du thread de messages la transmet au DAW.
+const char* EchoflexAudioProcessor::queuedId (int i)
 {
-    const double now = juce::Time::getMillisecondCounterHiRes();
+    static const char* ids[numQueued] = { "delay", "sustain", "volume", "age", "ageOn", "active", "timeSrc", "syncDiv", "tapMs" };
+    return ids[juce::jlimit (0, numQueued - 1, i)];
+}
+
+void EchoflexAudioProcessor::setParamFromAudio (const char* id, float plain)
+{
+    for (int i = 0; i < numQueued; ++i)
+        if (std::strcmp (id, queuedId (i)) == 0)
+        {
+            pendingValue[i].store (plain, std::memory_order_relaxed);
+            pendingSet[i].store (true, std::memory_order_release);
+            return;
+        }
+}
+
+float EchoflexAudioProcessor::queuedOrCurrent (const char* id, std::atomic<float>* current) const
+{
+    for (int i = 0; i < numQueued; ++i)
+        if (std::strcmp (id, queuedId (i)) == 0 && pendingSet[i].load (std::memory_order_acquire))
+            return pendingValue[i].load (std::memory_order_relaxed);
+    return current->load (std::memory_order_relaxed);
+}
+
+void EchoflexAudioProcessor::timerCallback()
+{
+    const int preset = pendingPreset.exchange (-1);
+    if (preset >= 0)
+        applyFactoryPreset (preset);
+
+    const double tapAt = pendingTapMs.exchange (0.0);
+    if (tapAt > 0.0)
+        tap (tapAt);
+
+    for (int i = 0; i < numQueued; ++i)
+        if (pendingSet[i].exchange (false, std::memory_order_acquire))
+            if (auto* prm = apvts.getParameter (queuedId (i)))
+                prm->setValueNotifyingHost (prm->convertTo0to1 (pendingValue[i].load (std::memory_order_relaxed)));
+}
+
+void EchoflexAudioProcessor::tap (double nowMs)
+{
+    const double now = nowMs > 0.0 ? nowMs : juce::Time::getMillisecondCounterHiRes();
     const double dt  = now - lastTapTime;
     lastTapTime = now;
 
@@ -236,25 +292,25 @@ void EchoflexAudioProcessor::handleMidi (juce::MidiBuffer& midi)
             switch (cc)
             {
                 case ccDelay:
-                    setParam ("delay", knobValue);
-                    if (juce::roundToInt (pTimeSrc->load()) == 2) setParam ("syncDiv", (float) syncDivFromKnob (knobValue));
-                    else                                          setParam ("timeSrc", 0.0f);
+                    setParamFromAudio ("delay", knobValue);
+                    if (juce::roundToInt (pTimeSrc->load (std::memory_order_relaxed)) == 2) setParamFromAudio ("syncDiv", (float) syncDivFromKnob (knobValue));
+                    else                                                                    setParamFromAudio ("timeSrc", 0.0f);
                     currentPreset = -1;
                     break;
-                case ccSync:       setParam ("timeSrc", v >= 64 ? 2.0f : 0.0f); break;
-                case ccSustain:    setParam ("sustain", knobValue); currentPreset = -1; break;
-                case ccVolume:     setParam ("volume",  knobValue); currentPreset = -1; break;
-                case ccAge:        setParam ("age",     knobValue); currentPreset = -1; break;
-                case ccAgeOn:      setParam ("ageOn",  v >= 64 ? 1.0f : 0.0f); break;
-                case ccFootswitch: setParam ("active", v >= 64 ? 1.0f : 0.0f); break;
+                case ccSync:       setParamFromAudio ("timeSrc", v >= 64 ? 2.0f : 0.0f); break;
+                case ccSustain:    setParamFromAudio ("sustain", knobValue); currentPreset = -1; break;
+                case ccVolume:     setParamFromAudio ("volume",  knobValue); currentPreset = -1; break;
+                case ccAge:        setParamFromAudio ("age",     knobValue); currentPreset = -1; break;
+                case ccAgeOn:      setParamFromAudio ("ageOn",  v >= 64 ? 1.0f : 0.0f); break;
+                case ccFootswitch: setParamFromAudio ("active", v >= 64 ? 1.0f : 0.0f); break;
                 case ccTap:
-                    if (v >= 64 && prevTapCC < 64)
-                        tap();
+                    if (v >= 64 && prevTapCC < 64)   // instant du TAP note ici, calcul fait par le timer
+                        pendingTapMs.store (juce::Time::getMillisecondCounterHiRes());
                     prevTapCC = v;
                     break;
                 case ccFootToggle:
                     if (v >= 64 && prevToggleValue < 64)
-                        setParam ("active", pActive->load() > 0.5f ? 0.0f : 1.0f);
+                        setParamFromAudio ("active", queuedOrCurrent ("active", pActive) > 0.5f ? 0.0f : 1.0f);
                     prevToggleValue = v;
                     break;
                 default: break;
@@ -268,7 +324,7 @@ void EchoflexAudioProcessor::handleMidi (juce::MidiBuffer& midi)
         {
             const int prog = m.getProgramChangeNumber();
             if (prog < getNumFactoryPresets())
-                applyFactoryPreset (prog);
+                pendingPreset.store (prog);      // applique par le timer (thread de messages)
 
             lastMidiProgram = prog;
             lastMidiCC      = -2; // indique un Program Change

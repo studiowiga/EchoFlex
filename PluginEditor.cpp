@@ -246,6 +246,7 @@ EchoflexAudioProcessorEditor::EchoflexAudioProcessorEditor (EchoflexAudioProcess
     setResizeLimits (defaultW, defaultH, baseW * 3 / 2, baseH * 3 / 2);
     if (auto* cons = getConstrainer())
         cons->setFixedAspectRatio ((double) baseW / (double) baseH);
+    setOpaque (true);                      // anti-gel : l'hote ne redessine jamais ce qui est derriere la fenetre
     setSize (defaultW, defaultH);
     rebuildCaches();
 
@@ -384,6 +385,7 @@ void EchoflexAudioProcessorEditor::resized()
     tapArea.setBounds (scaled (tapRect));
     syncArea.setBounds (scaled (syncRect));
 
+    // anti-gel : jamais de setSize ici (les limites du constrainer suffisent) ;
     // pendant un redimensionnement a la souris, on attend que la taille se stabilise
     resizeSettle = 4;
 }
@@ -436,10 +438,21 @@ String EchoflexAudioProcessorEditor::buildPresetLine() const
 // Anti-gel de la fenetre (Windows) : JUCE 8 dessine par defaut avec Direct2D (carte graphique).
 // Avec certains pilotes (Intel notamment) la fenetre du plugin cesse de se rafraichir alors que
 // le DAW continue de tourner. Le moteur logiciel est stable partout et largement assez rapide ici.
+//
+// Anti-gel v2 (Studio Wiga) :
+//  1. moteur de rendu logiciel force sur Windows, applique a chaque nouvelle fenetre hote (peer)
+//     et reverifie toutes les secondes, jamais en boucle ;
+//  2. aucun calcul lourd dans paint() : les caches d'images sont reconstruits par le timer seulement,
+//     apres stabilisation de la taille ou quand l'echelle d'affichage change (au plus toutes les 250 ms) ;
+//  3. chien de garde : si un redessin demande n'est pas arrive au bout de 1,5 s alors que la fenetre est
+//     visible, le moteur de rendu est reapplique et toute la fenetre est redessinee ;
+//  4. cote audio : aucun appel a l'hote depuis le thread audio (voir PluginProcessor).
 void EchoflexAudioProcessorEditor::useSoftwareRenderer()
 {
+    auto* peer = getPeer();
+    if (peer != lastPeer) { lastPeer = peer; repaint(); }
    #if JUCE_WINDOWS
-    if (auto* peer = getPeer())
+    if (peer != nullptr)
     {
         int sw = peer->getAvailableRenderingEngines().indexOf ("Software Renderer");
         if (sw < 0) sw = 0;
@@ -454,18 +467,48 @@ void EchoflexAudioProcessorEditor::parentHierarchyChanged()
     useSoftwareRenderer();
 }
 
+void EchoflexAudioProcessorEditor::visibilityChanged()
+{
+    useSoftwareRenderer();
+    if (isShowing())
+        repaint();
+}
+
+void EchoflexAudioProcessorEditor::askRepaint (Rectangle<int> r)
+{
+    if (repaintAskedMs <= 0.0) repaintAskedMs = Time::getMillisecondCounterHiRes();
+    repaint (r);
+}
+
 //==============================================================================
 void EchoflexAudioProcessorEditor::timerCallback()
 {
-    useSoftwareRenderer();   // au cas ou la fenetre a ete recreee par l'hote (changement d'ecran, d'echelle...)
-
     const double now = Time::getMillisecondCounterHiRes();
     const double dt = jlimit (0.0, 0.1, (now - lastTime) * 0.001);
     lastTime = now;
 
+    // au cas ou la fenetre a ete recreee par l'hote (changement d'ecran, d'echelle...) : au plus 1 fois par seconde
+    if (getPeer() != lastPeer || now - lastRendererCheckMs > 1000.0) { lastRendererCheckMs = now; useSoftwareRenderer(); }
+
+    // caches : reconstruits ici seulement (jamais dans paint)
     if (resizeSettle > 0 && --resizeSettle == 0)
         rebuildCaches();
+    else if (resizeSettle == 0 && now - lastScaleCheckMs > 250.0)
+    {
+        lastScaleCheckMs = now;
+        const float sc = physicalScale();
+        if (std::abs (sc - cacheScale) > 0.01f)
+            rebuildCaches (sc);
+    }
 
+    // chien de garde : un redessin demande n'arrive pas -> on relance le moteur de rendu et on redessine tout
+    if (repaintAskedMs > 0.0 && isShowing() && now - repaintAskedMs > 1500.0 && lastPaintMs < repaintAskedMs)
+    {
+        repaintAskedMs = 0.0;
+        lastPeer = nullptr;
+        useSoftwareRenderer();
+        repaint();
+    }
 
     volume.checkLongPress (now);
 
@@ -555,26 +598,26 @@ void EchoflexAudioProcessorEditor::timerCallback()
 
     // --- On ne redessine que ce qui a change (zones separees, pas une grande union) ---
     const float ledNow = ledLevel * ledFlicker * (0.86f + 0.22f * echoGlow);
-    if (std::abs (ledNow - drawnLed) > 0.003f)
+    if (std::abs (ledNow - drawnLed) > 0.002f)
     {
         drawnLed = ledNow;
-        repaint (scaled ({ ledPos.x - 52.0f, ledPos.y - 52.0f, 104.0f, 104.0f }));
+        askRepaint (scaled ({ ledPos.x - 52.0f, ledPos.y - 52.0f, 104.0f, 104.0f }));
     }
-    if (std::abs (ageLedLevel - drawnAge) > 0.003f)
+    if (std::abs (ageLedLevel - drawnAge) > 0.002f)
     {
         drawnAge = ageLedLevel;
-        repaint (scaled ({ agePos.x - 26.0f, agePos.y - 26.0f, 52.0f, 52.0f }));
+        askRepaint (scaled ({ agePos.x - 26.0f, agePos.y - 26.0f, 52.0f, 52.0f }));
     }
-    if (std::abs (syncLedLevel - drawnSync) > 0.003f)
+    if (std::abs (syncLedLevel - drawnSync) > 0.002f)
     {
         drawnSync = syncLedLevel;
-        repaint (scaled ({ syncPos.x - 26.0f, syncPos.y - 26.0f, 52.0f, 52.0f }));
+        askRepaint (scaled ({ syncPos.x - 26.0f, syncPos.y - 26.0f, 52.0f, 52.0f }));
     }
     const float tapNow = jmax (tapFlash, tapArea.isMouseOver() ? 0.25f : 0.0f);
-    if (std::abs (tapNow - drawnTap) > 0.003f)
+    if (std::abs (tapNow - drawnTap) > 0.002f)
     {
         drawnTap = tapNow;
-        repaint (scaled (tapRect.expanded (12.0f)));
+        askRepaint (scaled (tapRect.expanded (12.0f)));
     }
 
     const auto newStatus = buildStatusLine();
@@ -582,10 +625,10 @@ void EchoflexAudioProcessorEditor::timerCallback()
     const bool textChanged = newStatus != lastStatus || newPreset != lastPreset;
     lastStatus = newStatus;
     lastPreset = newPreset;
-    if (std::abs (statusAlpha - drawnStatus) > 0.003f || (statusAlpha > 0.0f && (textChanged || midiFlash > 0)))
+    if (std::abs (statusAlpha - drawnStatus) > 0.002f || (statusAlpha > 0.0f && (textChanged || midiFlash > 0)))
     {
         drawnStatus = statusAlpha;
-        repaint (scaled (statusRect.expanded (4.0f)));
+        askRepaint (scaled (statusRect.expanded (4.0f)));
     }
 }
 
@@ -669,17 +712,15 @@ void EchoflexAudioProcessorEditor::drawStatus (Graphics& g)
 
 void EchoflexAudioProcessorEditor::paint (Graphics& g)
 {
+    lastPaintMs = Time::getMillisecondCounterHiRes();
+    repaintAskedMs = 0.0;
     g.fillAll (Colours::black);
-    // echelle reelle des pixels de ce dessin (ecran HiDPI, zoom du DAW, capture...)
-    const float pix = jlimit (1.0f, 4.0f, g.getInternalContext().getPhysicalPixelScaleFactor());
-    if (! bgScaled.isValid() || (resizeSettle == 0 && std::abs (pix - cacheScale) > 0.01f))
-        rebuildCaches (pix);
-
-    // fond deja a la taille d'affichage : copie quasi directe, sans re-echantillonnage couteux
-    g.setImageResamplingQuality (bgScaled.getWidth() == background.getWidth() ? Graphics::highResamplingQuality
-                                                                               : Graphics::lowResamplingQuality);
-    if (bgScaled.isValid())
-        g.drawImage (bgScaled, getLocalBounds().toFloat());
+    // anti-gel : aucun rescale ici, on dessine le cache existant (ou l'original en attendant le timer)
+    const Image& bg = bgScaled.isValid() ? bgScaled : background;
+    g.setImageResamplingQuality (bg.getWidth() == background.getWidth() ? Graphics::highResamplingQuality
+                                                                         : Graphics::lowResamplingQuality);
+    if (bg.isValid())
+        g.drawImage (bg, getLocalBounds().toFloat());
 
     const float s = (float) getHeight() / (float) baseH;
     g.addTransform (AffineTransform::scale (s));
@@ -796,7 +837,7 @@ void EchoflexAudioProcessorEditor::showContextMenu()
     menu.addSubMenu ("MIDI map", midi);
 
     menu.addSeparator();
-    menu.addItem (999, "Echoflex delay v1.2.1 - STUDIO WIGA", false);
+    menu.addItem (999, "Echoflex delay v1.3.0 - STUDIO WIGA", false);
 
     menu.showMenuAsync (PopupMenu::Options().withTargetComponent (this),
         [safe = Component::SafePointer<EchoflexAudioProcessorEditor> (this)] (int r)
