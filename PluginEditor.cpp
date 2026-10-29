@@ -916,7 +916,7 @@ void EchoflexAudioProcessorEditor::showContextMenu (Array<int> learnItems)
     menu.addSubMenu ("MIDI", midi);
 
     menu.addSeparator();
-    menu.addItem (999, "Echoflex delay v1.4.0 - STUDIO WIGA", false);
+    menu.addItem (999, "Echoflex delay v1.4.1 - STUDIO WIGA", false);
 
     menu.showMenuAsync (PopupMenu::Options().withTargetComponent (this),
         [safe = Component::SafePointer<EchoflexAudioProcessorEditor> (this)] (int r)

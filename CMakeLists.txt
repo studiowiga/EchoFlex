@@ -25,7 +25,7 @@ juce_add_plugin(Echoflex
     PLUGIN_CODE                 Ecfx
     FORMATS                     VST3
     PRODUCT_NAME                "Echoflex"
-    VERSION                     1.4.0
+    VERSION                     1.4.1
     IS_SYNTH                    FALSE
     NEEDS_MIDI_INPUT            TRUE
     NEEDS_MIDI_OUTPUT           FALSE
