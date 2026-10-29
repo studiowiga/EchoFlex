@@ -79,3 +79,5 @@ Comme les autres plugins Studio Wiga : **avant** Genome. Le mode Mono (par défa
 - « PUSH FOR AGE » plus lisible ; inscription SYNC au-dessus de sa LED.
 - Affichage fluide : fond et potards pré-dimensionnés à l'écran, seules les LED et la ligne d'état sont redessinées ; geste d'automation de VOLUME toujours refermé après l'appui long AGE.
 - Notice : `Echoflex-Manual.pdf` (anglais puis français).
+
+- v1.4.1 : menu de taille de fenêtre : « 60 % (default) », 75 %, 100 % (plus de taille en pixels)
