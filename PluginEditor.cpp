@@ -179,7 +179,17 @@ EchoflexAudioProcessorEditor::EchoflexAudioProcessorEditor (EchoflexAudioProcess
     lastAgeOn   = proc.apvts.getRawParameterValue ("ageOn")->load() > 0.5f ? 1.0f : 0.0f;
     lastTimeSrc = proc.apvts.getRawParameterValue ("timeSrc")->load();
     lastSyncDiv = proc.apvts.getRawParameterValue ("syncDiv")->load();
-    rightClickFwd.callback = [this] { showContextMenu(); };
+    // clic droit sur une commande : MIDI Learn de cette commande en tete du menu
+    rightClickFwd.callback = [this] (Component* c)
+    {
+        using P = EchoflexAudioProcessor;
+        Array<int> items;
+        if      (c == &delay)      items = { P::lDelay };
+        else if (c == &sustain)    items = { P::lSustain };
+        else if (c == &volume)     items = { P::lVolume, P::lAge, P::lAgeOn };   // VOLUME + poussoir AGE
+        else if (c == &footswitch) items = { P::lFoot, P::lFootToggle };
+        showContextMenu (items);
+    };
 
     auto setupKnob = [this] (Slider& s)
     {
@@ -231,7 +241,7 @@ EchoflexAudioProcessorEditor::EchoflexAudioProcessorEditor (EchoflexAudioProcess
     addAndMakeVisible (footswitch);
 
     tapArea.onClick      = [this] { proc.tap(); };
-    tapArea.onRightClick = [this] { showContextMenu(); };
+    tapArea.onRightClick = [this] { showContextMenu ({ EchoflexAudioProcessor::lTap }); };
     addAndMakeVisible (tapArea);
 
     // SYNC : clic = suit le tempo du DAW (on/off), clic droit = division, molette = division
@@ -398,6 +408,13 @@ String EchoflexAudioProcessorEditor::buildStatusLine() const
     auto v = [this] (const char* id) { return String (proc.apvts.getRawParameterValue (id)->load(), 1); };
     const int ms = roundToInt (proc.delayMsDisplay.load());
 
+    // MIDI Learn : attente d'un CC, puis « <Commande> = CC n » pendant 2 s
+    const int lt = proc.learnTarget.load();
+    if (lt >= 0)
+        return "MIDI LEARN: move a control for " + String (EchoflexAudioProcessor::learnInfo (lt).name);
+    if (Time::getMillisecondCounterHiRes() < learnMsgUntil)
+        return learnMsg;
+
     if (proc.ageEdit.load())
         return "AGE " + v ("age") + "  (push VOLUME to lock)";
 
@@ -518,6 +535,17 @@ void EchoflexAudioProcessorEditor::timerCallback()
     const int mc = proc.midiCounter.load();
     if (mc != lastMidiCount) { lastMidiCount = mc; midiFlash = 8; }
     if (midiFlash > 0) --midiFlash;
+
+    // MIDI Learn : la ligne d'etat reste affichee pendant l'attente ; message 2 s apres l'affectation
+    const int learned = proc.lastLearned.exchange (-1);
+    if (learned >= 0)
+    {
+        learnMsg = String (EchoflexAudioProcessor::learnInfo (learned).name) + " = CC " + String (proc.ccNum[learned].load());
+        learnMsgUntil = now + 2000.0;
+        statusUntil = jmax (statusUntil, learnMsgUntil);
+    }
+    if (proc.learnTarget.load() >= 0)
+        showStatus();
 
     const int tc = proc.tapCounter.load();
     if (tc != lastTapCount) { lastTapCount = tc; tapFlash = 1.0f; showStatus(); }
@@ -702,7 +730,8 @@ void EchoflexAudioProcessorEditor::drawStatus (Graphics& g)
 
     g.setColour (Colours::white.withAlpha (a));
     g.setFont (font (18.5f, true));
-    g.drawText (lastStatus, statusRect.withHeight (28.0f).translated (0.0f, 3.0f), Justification::centred);
+    g.drawFittedText (lastStatus, statusRect.withHeight (28.0f).translated (0.0f, 3.0f).reduced (6.0f, 0.0f).toNearestInt(),
+                      Justification::centred, 1, 0.75f);
 
     g.setColour ((midiFlash > 0 || tapFlash > 0.0f ? Colour (0xffff6a50) : accent).withMultipliedAlpha (a));
     g.setFont (font (14.5f, true));
@@ -742,6 +771,7 @@ void EchoflexAudioProcessorEditor::showSyncMenu()
     auto raw = [this] (const char* id) { return proc.apvts.getRawParameterValue (id)->load(); };
     const int src = roundToInt (raw ("timeSrc"));
     PopupMenu m;
+    addLearnItems (m, { EchoflexAudioProcessor::lSync });
     m.addSectionHeader ("Sync delay to DAW tempo");
     m.addItem (1, "Sync on", true, src == 2);
     m.addSeparator();
@@ -753,6 +783,7 @@ void EchoflexAudioProcessorEditor::showSyncMenu()
         [safe = Component::SafePointer<EchoflexAudioProcessorEditor> (this)] (int r)
         {
             if (safe == nullptr || r == 0) return;
+            if (safe->handleLearnResult (r)) return;
             if (r == 1) safe->toggleSync();
             else
             {
@@ -764,10 +795,60 @@ void EchoflexAudioProcessorEditor::showSyncMenu()
         });
 }
 
-void EchoflexAudioProcessorEditor::showContextMenu()
+//==============================================================================
+// MIDI Learn (menus) : 1000 + n = learn, 1100 = annuler, 1101 = numeros par defaut, 1200 + n = effacer
+//==============================================================================
+static String ccLabel (int cc)
+{
+    return cc >= 0 ? "CC " + String (cc) : String (CharPointer_UTF8 ("\xe2\x80\x94"));
+}
+
+void EchoflexAudioProcessorEditor::addLearnItems (PopupMenu& m, const Array<int>& learnItems)
+{
+    if (learnItems.isEmpty())
+        return;
+    for (int i : learnItems)
+    {
+        const String name = EchoflexAudioProcessor::learnInfo (i).name;
+        const int cc = proc.ccNum[i].load();
+        m.addItem (1000 + i, "MIDI Learn: " + name + " (" + ccLabel (cc) + ")", true, proc.learnTarget.load() == i);
+        m.addItem (1200 + i, "Clear MIDI: " + name, cc >= 0);
+    }
+    if (proc.learnTarget.load() >= 0)
+        m.addItem (1100, "Cancel MIDI learn");
+    m.addSeparator();
+}
+
+bool EchoflexAudioProcessorEditor::handleLearnResult (int r)
+{
+    using P = EchoflexAudioProcessor;
+    if (r >= 1000 && r < 1000 + P::numLearn)      proc.learnTarget.store (r - 1000);
+    else if (r == 1100)                           proc.learnTarget.store (-1);
+    else if (r == 1101)
+    {
+        proc.learnTarget.store (-1);
+        proc.resetMidiDefaults();
+        learnMsg = "MIDI: default CC 20 - 28";
+        learnMsgUntil = Time::getMillisecondCounterHiRes() + 2000.0;
+    }
+    else if (r >= 1200 && r < 1200 + P::numLearn)
+    {
+        proc.ccNum[r - 1200].store (-1);
+        learnMsg = String (P::learnInfo (r - 1200).name) + " = " + ccLabel (-1);
+        learnMsgUntil = Time::getMillisecondCounterHiRes() + 2000.0;
+    }
+    else
+        return false;
+
+    showStatus();
+    return true;
+}
+
+void EchoflexAudioProcessorEditor::showContextMenu (Array<int> learnItems)
 {
     auto raw = [this] (const char* id) { return proc.apvts.getRawParameterValue (id)->load(); };
     PopupMenu menu;
+    addLearnItems (menu, learnItems);
 
     PopupMenu sizes;
     const int defaultW = roundToInt ((float) defaultH * (float) baseW / (float) baseH);
@@ -824,20 +905,18 @@ void EchoflexAudioProcessorEditor::showContextMenu()
     menu.addSeparator();
 
     PopupMenu midi;
-    midi.addItem (900, "CC 20  Delay",                              false);
-    midi.addItem (901, "CC 21  Sustain",                            false);
-    midi.addItem (902, "CC 22  Volume",                             false);
-    midi.addItem (903, "CC 23  Age amount",                         false);
-    midi.addItem (904, "CC 24  Age (0-63 clear / 64+ age)",         false);
-    midi.addItem (905, "CC 25  Tap (each press)",                   false);
-    midi.addItem (906, "CC 26  Footswitch (64+ ON / 0-63 OFF)",     false);
-    midi.addItem (907, "CC 27  Footswitch toggle (each press)",     false);
-    midi.addItem (909, "CC 28  Sync to DAW tempo (64+ ON / 0-63 OFF)", false);
+    for (int i = 0; i < EchoflexAudioProcessor::numLearn; ++i)
+        midi.addItem (1000 + i, "Learn: " + String (EchoflexAudioProcessor::learnInfo (i).name)
+                                  + " (" + ccLabel (proc.ccNum[i].load()) + ")", true, proc.learnTarget.load() == i);
+    if (proc.learnTarget.load() >= 0)
+        midi.addItem (1100, "Cancel MIDI learn");
+    midi.addItem (1101, "Reset MIDI to defaults (CC 20 - 28)");
+    midi.addSeparator();
     midi.addItem (908, "Program Change 1-10  Factory presets",      false);
-    menu.addSubMenu ("MIDI map", midi);
+    menu.addSubMenu ("MIDI", midi);
 
     menu.addSeparator();
-    menu.addItem (999, "Echoflex delay v1.3.0 - STUDIO WIGA", false);
+    menu.addItem (999, "Echoflex delay v1.4.0 - STUDIO WIGA", false);
 
     menu.showMenuAsync (PopupMenu::Options().withTargetComponent (this),
         [safe = Component::SafePointer<EchoflexAudioProcessorEditor> (this)] (int r)
@@ -846,6 +925,7 @@ void EchoflexAudioProcessorEditor::showContextMenu()
                 return;
 
             auto& ed = *safe;
+            if (ed.handleLearnResult (r)) return;
             if      (r == 1) ed.setScaledHeight (defaultH);
             else if (r == 2) ed.setScaledHeight (roundToInt (baseH * 0.75f));
             else if (r == 3) ed.setScaledHeight (baseH);

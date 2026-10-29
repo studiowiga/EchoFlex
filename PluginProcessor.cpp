@@ -87,7 +87,34 @@ EchoflexAudioProcessor::EchoflexAudioProcessor()
         pendingValue[i].store (0.0f);
         pendingSet[i].store (false);
     }
+    resetMidiDefaults();
     startTimerHz (60);
+}
+
+//==============================================================================
+// MIDI Learn : commandes apprenables (CC par defaut = numeros fixes des versions precedentes)
+//==============================================================================
+const EchoflexAudioProcessor::LearnInfo& EchoflexAudioProcessor::learnInfo (int index)
+{
+    static const LearnInfo table[numLearn] =
+    {
+        { "ccDelay",      "Delay",             ccDelay,      kindKnob   },
+        { "ccSustain",    "Sustain",           ccSustain,    kindKnob   },
+        { "ccVolume",     "Volume",            ccVolume,     kindKnob   },
+        { "ccAge",        "Age amount",        ccAge,        kindKnob   },
+        { "ccAgeOn",      "Age on/off",        ccAgeOn,      kindToggle },
+        { "ccTap",        "Tap",               ccTap,        kindPress  },
+        { "ccFoot",       "Footswitch",        ccFootswitch, kindToggle },
+        { "ccFootToggle", "Footswitch toggle", ccFootToggle, kindPress  },
+        { "ccSync",       "Sync",              ccSync,       kindToggle },
+    };
+    return table[juce::jlimit (0, numLearn - 1, index)];
+}
+
+void EchoflexAudioProcessor::resetMidiDefaults()
+{
+    for (int i = 0; i < numLearn; ++i)
+        ccNum[i].store (learnInfo (i).defaultCC);
 }
 
 EchoflexAudioProcessor::~EchoflexAudioProcessor()
@@ -289,31 +316,50 @@ void EchoflexAudioProcessor::handleMidi (juce::MidiBuffer& midi)
             const int v  = m.getControllerValue();
             const float knobValue = (float) v / 127.0f * 10.0f;
 
-            switch (cc)
+            // MIDI Learn : le premier CC recu est affecte a la commande visee (il n'agit pas sur le son)
+            const int lt = learnTarget.load();
+            if (lt >= 0 && lt < numLearn && cc < 120)
             {
-                case ccDelay:
-                    setParamFromAudio ("delay", knobValue);
-                    if (juce::roundToInt (pTimeSrc->load (std::memory_order_relaxed)) == 2) setParamFromAudio ("syncDiv", (float) syncDivFromKnob (knobValue));
-                    else                                                                    setParamFromAudio ("timeSrc", 0.0f);
-                    currentPreset = -1;
-                    break;
-                case ccSync:       setParamFromAudio ("timeSrc", v >= 64 ? 2.0f : 0.0f); break;
-                case ccSustain:    setParamFromAudio ("sustain", knobValue); currentPreset = -1; break;
-                case ccVolume:     setParamFromAudio ("volume",  knobValue); currentPreset = -1; break;
-                case ccAge:        setParamFromAudio ("age",     knobValue); currentPreset = -1; break;
-                case ccAgeOn:      setParamFromAudio ("ageOn",  v >= 64 ? 1.0f : 0.0f); break;
-                case ccFootswitch: setParamFromAudio ("active", v >= 64 ? 1.0f : 0.0f); break;
-                case ccTap:
-                    if (v >= 64 && prevTapCC < 64)   // instant du TAP note ici, calcul fait par le timer
-                        pendingTapMs.store (juce::Time::getMillisecondCounterHiRes());
-                    prevTapCC = v;
-                    break;
-                case ccFootToggle:
-                    if (v >= 64 && prevToggleValue < 64)
-                        setParamFromAudio ("active", queuedOrCurrent ("active", pActive) > 0.5f ? 0.0f : 1.0f);
-                    prevToggleValue = v;
-                    break;
-                default: break;
+                for (int i = 0; i < numLearn; ++i)          // un CC ne pilote qu'une commande
+                    if (i != lt && ccNum[i].load() == cc)
+                        ccNum[i].store (-1);
+                ccNum[lt].store (cc);
+                lastLearned.store (lt);
+                learnTarget.store (-1);
+                continue;
+            }
+
+            for (int i = 0; i < numLearn; ++i)
+            {
+                if (ccNum[i].load (std::memory_order_relaxed) != cc)
+                    continue;
+
+                switch (i)
+                {
+                    case lDelay:
+                        setParamFromAudio ("delay", knobValue);
+                        if (juce::roundToInt (pTimeSrc->load (std::memory_order_relaxed)) == 2) setParamFromAudio ("syncDiv", (float) syncDivFromKnob (knobValue));
+                        else                                                                    setParamFromAudio ("timeSrc", 0.0f);
+                        currentPreset = -1;
+                        break;
+                    case lSync:    setParamFromAudio ("timeSrc", v >= 64 ? 2.0f : 0.0f); break;
+                    case lSustain: setParamFromAudio ("sustain", knobValue); currentPreset = -1; break;
+                    case lVolume:  setParamFromAudio ("volume",  knobValue); currentPreset = -1; break;
+                    case lAge:     setParamFromAudio ("age",     knobValue); currentPreset = -1; break;
+                    case lAgeOn:   setParamFromAudio ("ageOn",  v >= 64 ? 1.0f : 0.0f); break;
+                    case lFoot:    setParamFromAudio ("active", v >= 64 ? 1.0f : 0.0f); break;
+                    case lTap:
+                        if (v >= 64 && prevTapCC < 64)   // instant du TAP note ici, calcul fait par le timer
+                            pendingTapMs.store (juce::Time::getMillisecondCounterHiRes());
+                        prevTapCC = v;
+                        break;
+                    case lFootToggle:
+                        if (v >= 64 && prevToggleValue < 64)
+                            setParamFromAudio ("active", queuedOrCurrent ("active", pActive) > 0.5f ? 0.0f : 1.0f);
+                        prevToggleValue = v;
+                        break;
+                    default: break;
+                }
             }
 
             lastMidiCC    = cc;
@@ -662,6 +708,8 @@ void EchoflexAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
     state.setProperty ("currentPreset", currentPreset.load(), nullptr);
+    for (int i = 0; i < numLearn; ++i)                 // assignations MIDI Learn
+        state.setProperty (learnInfo (i).key, ccNum[i].load(), nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -674,6 +722,8 @@ void EchoflexAudioProcessor::setStateInformation (const void* data, int sizeInBy
         {
             auto state = juce::ValueTree::fromXml (*xml);
             currentPreset = (int) state.getProperty ("currentPreset", 0);
+            for (int i = 0; i < numLearn; ++i)         // ancien projet : numeros par defaut
+                ccNum[i].store (juce::jlimit (-1, 119, (int) state.getProperty (learnInfo (i).key, learnInfo (i).defaultCC)));
             apvts.replaceState (state);
         }
     }

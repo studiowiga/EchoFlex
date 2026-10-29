@@ -53,7 +53,7 @@ Sources : manuel Dunlop EP103 (jimdunlop.com), fiches zZounds et Chicago Music E
 | CC 28 | SYNC : 64-127 delay calé sur le tempo du DAW, 0-63 potard DELAY |
 | Program Change 1-10 | Presets d'usine |
 
-Tous les paramètres sont aussi automatisables et assignables en MIDI-learn dans le DAW.
+Numéros par défaut ci-dessus ; chaque commande peut être réassignée par **MIDI Learn** (clic droit sur une commande ou menu MIDI). Tous les paramètres sont aussi automatisables dans le DAW.
 
 ## Presets d'usine
 
@@ -62,6 +62,10 @@ Tous les paramètres sont aussi automatisables et assignables en MIDI-learn dans
 ## Placement dans Reaper
 
 Comme les autres plugins Studio Wiga : **avant** Genome. Le mode Mono (par défaut, comme la pédale) envoie le même écho à gauche et à droite, sans opposition de phase : aucune annulation quand Genome additionne la piste en mono.
+
+## Nouveautés v1.4
+
+- v1.4.0 : MIDI Learn sur toutes les commandes (clic droit sur une commande ou menu MIDI), assignations sauvegardées avec le projet
 
 ## Nouveautés v1.3
 
